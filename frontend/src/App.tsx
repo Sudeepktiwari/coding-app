@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Send, PaperclipIcon, Trash2, X } from "lucide-react";
+import { Send, Paperclip, X, PlusCircle } from "lucide-react";
 
 const CodeAssistant = () => {
   const [messages, setMessages] = useState([]);
@@ -8,29 +8,24 @@ const CodeAssistant = () => {
   const [isLoading, setIsLoading] = useState(false);
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const [sessions, setSessions] = useState(["Session 1"]);
+  const [currentSession, setCurrentSession] = useState("Session 1");
 
   useEffect(() => {
-    const sessionId =
-      localStorage.getItem("chatSessionId") ||
-      Math.random().toString(36).substring(7);
-    localStorage.setItem("chatSessionId", sessionId);
-
-    const savedMessages = sessionStorage.getItem("chatMessages");
-    if (savedMessages) {
-      setMessages(JSON.parse(savedMessages));
-    }
+    setSessions(["Session 1"]);
+    setCurrentSession("Session 1");
   }, []);
 
   useEffect(() => {
-    sessionStorage.setItem("chatMessages", JSON.stringify(messages));
-  }, [messages]);
+    sessionStorage.setItem(currentSession, JSON.stringify(messages));
+  }, [messages, currentSession]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   const handleFileUpload = (e) => {
-    const newFiles = Array.from(e.target.files);
+    const newFiles = Array.from(e.target.files || []);
     setFiles((prevFiles) => [...prevFiles, ...newFiles]);
   };
 
@@ -38,78 +33,147 @@ const CodeAssistant = () => {
     setFiles(files.filter((file) => file.name !== fileName));
   };
 
+  const readFileContent = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target?.result);
+      reader.onerror = (e) => reject(e);
+      reader.readAsText(file);
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!input.trim() && files.length === 0) return;
+    if (!input.trim() && files.length === 0) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          type: "error",
+          content: "Please provide instructions or upload a file.",
+        },
+      ]);
+      return;
+    }
 
     setIsLoading(true);
-    const sessionId = localStorage.getItem("chatSessionId");
+    const serverIP = import.meta.env.VITE_SERVER_IP;
+
+    const fileContents = await Promise.all(
+      files.map(async (file) => ({
+        name: file.name,
+        content: await readFileContent(file),
+      }))
+    );
+
+    // Combine instructions and file content into a single message
+    const combinedInstructions = `${input}\n\n${fileContents
+      .map((file) => `--- File: ${file.name} ---\n${file.content}`)
+      .join("\n\n")}`;
 
     const userMessage = {
       type: "user",
-      content: input,
+      content: combinedInstructions,
       files: files.map((f) => f.name),
     };
     setMessages((prev) => [...prev, userMessage]);
 
     try {
-      const fileContents = await Promise.all(
-        files.map(async (file) => {
-          return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-              resolve({
-                name: file.name,
-                content: e.target.result,
-              });
-            };
-            reader.readAsText(file);
-          });
-        })
-      );
-
-      const response = await fetch("/generate-code", {
+      const response = await fetch(`http://${serverIP}:3000/generate-code`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          sessionId,
-          instructions: input,
+          sessionId: currentSession,
+          instructions: combinedInstructions,
           files: fileContents,
         }),
       });
 
-      const data = await response.json();
+      if (!response.ok) {
+        const errorData = await response.text();
+        throw new Error(
+          `Server responded with status: ${response.status}. ${errorData}`
+        );
+      }
 
+      const data = await response.json();
       setMessages((prev) => [
         ...prev,
-        {
-          type: "assistant",
-          content: data.code,
-        },
+        { type: "assistant", content: data.code },
       ]);
     } catch (error) {
       setMessages((prev) => [
         ...prev,
-        {
-          type: "error",
-          content: "Failed to generate response. Please try again.",
-        },
+        { type: "error", content: `Error: ${error.message}.` },
       ]);
     }
 
     setIsLoading(false);
     setInput("");
     setFiles([]);
-    fileInputRef.current.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const deleteSession = (sessionToDelete) => {
+    const updatedSessions = sessions.filter(
+      (session) => session !== sessionToDelete
+    );
+    setSessions(updatedSessions);
+    sessionStorage.removeItem(sessionToDelete);
+    if (currentSession === sessionToDelete) {
+      setCurrentSession(updatedSessions[0] || "Session 1");
+      setMessages([]);
+    }
+  };
+
+  const createNewSession = () => {
+    const newSession = `Session ${sessions.length + 1}`;
+    setSessions([...sessions, newSession]);
+    setCurrentSession(newSession);
+    setMessages([]);
   };
 
   return (
-    <div className="flex flex-col h-screen max-w-4xl mx-auto p-4">
-      <div className="bg-white rounded-lg shadow-lg p-6 flex-grow flex flex-col relative">
-        {/* Chat messages */}
-        <div className="flex-grow overflow-y-auto mb-4 space-y-4">
+    <div className="flex h-screen max-w-6xl mx-auto p-6">
+      {/* Sidebar */}
+      <div className="w-1/4 bg-gray-900 text-white p-6 rounded-lg shadow-lg mr-6">
+        <h2 className="text-lg font-bold mb-6">Sessions</h2>
+        <ul className="space-y-3">
+          {sessions.map((session, index) => (
+            <li
+              key={index}
+              className={`cursor-pointer p-3 rounded-lg flex justify-between items-center transition duration-300 ease-in-out ${
+                currentSession === session ? "bg-blue-600" : "hover:bg-gray-700"
+              }`}
+              onClick={() => {
+                setCurrentSession(session);
+                setMessages(JSON.parse(sessionStorage.getItem(session)) || []);
+              }}
+            >
+              <span>{session}</span>
+              <X
+                className="w-5 h-5 cursor-pointer hover:text-red-400"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteSession(session);
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+        <button
+          onClick={createNewSession}
+          className="mt-6 flex items-center gap-2 text-blue-400 hover:text-blue-300"
+        >
+          <PlusCircle className="w-5 h-5" /> New Session
+        </button>
+      </div>
+
+      {/* Main Chat Section */}
+      <div className="flex-1 flex flex-col bg-white rounded-lg shadow-xl">
+        {/* Messages Area */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {messages.map((message, index) => (
             <div
               key={index}
@@ -118,80 +182,64 @@ const CodeAssistant = () => {
               }`}
             >
               <div
-                className={`max-w-[80%] rounded-lg ${
+                className={`max-w-[80%] rounded-lg p-4 ${
                   message.type === "user"
                     ? "bg-blue-500 text-white"
                     : message.type === "error"
                     ? "bg-red-100 text-red-500"
                     : "bg-gray-100 text-gray-800"
-                } shadow-sm`}
+                }`}
               >
-                <div className="p-4">
-                  <pre className="whitespace-pre-wrap font-mono text-sm">
-                    {message.content}
-                  </pre>
-                  {message.files?.length > 0 && (
-                    <div className="mt-2 border-t border-opacity-20 pt-2">
-                      <p className="text-sm opacity-80">Attached files:</p>
-                      {message.files.map((file) => (
-                        <p key={file} className="text-xs opacity-70">
-                          {file}
-                        </p>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <pre className="whitespace-pre-wrap font-mono text-sm">
+                  {message.content}
+                </pre>
+                {message.files && message.files.length > 0 && (
+                  <div className="mt-2 text-sm opacity-75">
+                    Attached files: {message.files.join(", ")}
+                  </div>
+                )}
               </div>
             </div>
           ))}
           <div ref={chatEndRef} />
         </div>
 
-        {/* File upload preview */}
-        {files.length > 0 && (
-          <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-sm font-medium text-gray-700">
-                Attached Files
-              </p>
-              <button
-                onClick={() => setFiles([])}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-2">
-              {files.map((file) => (
-                <div
-                  key={file.name}
-                  className="flex items-center justify-between bg-white p-2 rounded text-sm"
-                >
-                  <span className="text-gray-600 truncate">{file.name}</span>
-                  <button
-                    onClick={() => removeFile(file.name)}
-                    className="text-gray-400 hover:text-red-500"
+        {/* Input Area */}
+        <div className="border-t p-4">
+          {/* File Preview */}
+          {files.length > 0 && (
+            <div className="mb-4 p-4 bg-gray-50 rounded-lg">
+              <div className="text-sm font-medium mb-2">Attached Files:</div>
+              <div className="flex flex-wrap gap-2">
+                {files.map((file) => (
+                  <div
+                    key={file.name}
+                    className="flex items-center gap-2 bg-white px-3 py-1 rounded-full text-sm border"
                   >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              ))}
+                    <span>{file.name}</span>
+                    <button
+                      onClick={() => removeFile(file.name)}
+                      className="text-red-500 hover:text-red-700"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Input form */}
-        <div className="relative">
-          <form onSubmit={handleSubmit} className="flex flex-col gap-2">
-            <div className="relative">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Enter your coding question..."
-                className="w-full p-4 pr-24 border rounded-lg resize-none bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                rows={3}
-              />
-              <div className="absolute bottom-3 right-3 flex gap-2">
+          {/* Input Form */}
+          <form onSubmit={handleSubmit} className="flex gap-4">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Enter your coding question..."
+              className="flex-1 p-4 border border-gray-300 rounded-lg resize-none bg-gray-50 focus:ring-2 focus:ring-blue-500"
+              rows={3}
+            />
+            <div className="flex flex-col gap-2">
+              <label className="p-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 cursor-pointer">
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -199,21 +247,15 @@ const CodeAssistant = () => {
                   multiple
                   className="hidden"
                 />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current.click()}
-                  className="p-2 text-gray-400 hover:text-gray-600 bg-white rounded-full shadow-sm hover:shadow-md transition-all"
-                >
-                  <PaperclipIcon className="w-5 h-5" />
-                </button>
-                <button
-                  type="submit"
-                  disabled={isLoading || (!input.trim() && files.length === 0)}
-                  className="p-2 bg-blue-500 text-white rounded-full shadow-sm hover:shadow-md hover:bg-blue-600 disabled:bg-gray-300 disabled:shadow-none transition-all"
-                >
-                  <Send className="w-5 h-5" />
-                </button>
-              </div>
+                <Paperclip className="w-5 h-5" />
+              </label>
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="p-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Send className="w-5 h-5" />
+              </button>
             </div>
           </form>
         </div>
