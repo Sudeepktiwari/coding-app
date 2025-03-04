@@ -141,7 +141,9 @@ ${doc.document_content}
     console.log("Sending to OpenAI:", JSON.stringify(messages, null, 2)); // Debug log
 
     const response = await openai.chat.completions.create({
-      model: "chatgpt-4o-latest",
+      // model: "chatgpt-4o-latest",
+      model: "gpt-4o",
+      // model: "o1-preview",
       messages: messages,
       temperature: 0.5,
       max_tokens: 1000,
